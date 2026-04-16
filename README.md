@@ -1,6 +1,6 @@
 # CDP Intelligence Dashboard
 
-A Streamlit application for monitoring and exploring your Customer Data Platform.
+A Streamlit application for monitoring and exploring your Customer Data Platforms.
 
 ## Data sources
 
