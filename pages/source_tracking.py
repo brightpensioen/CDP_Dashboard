@@ -1,213 +1,250 @@
-"""
-Source Tracking page — week-over-week attribution from vw_source_tracking_enriched.
-Date picker, leads + customers split, channel comparison line charts.
-"""
-
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
-
+from utils.data_loader import load_source_tracking
 from components.ui import (
-    inject_global_css, page_header, section_label, kpi_row,
-    pct_delta, channel_color, CHANNEL_COLORS,
+    T, inject_global_css, kpi_card_html, section_label_html,
+    CHANNEL_META, channel_badge_html,
 )
 from components.charts import source_bar_chart, wow_comparison_chart
-from utils.data_loader import load_source_tracking
-
-
-DEFAULT_LOOKBACK_DAYS = 56  # 8 weeks
 
 
 def render():
     inject_global_css()
-    page_header("Source Tracking", subtitle="vw_source_tracking_enriched")
 
-    # ── date picker in sidebar ────────────────────────────────────────────────
+    st.markdown(f"""
+<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;">
+  <h1 style="font-size:20px;font-weight:600;letter-spacing:-0.01em;color:{T['text']};">Source Tracking</h1>
+  <span style="font-size:11px;font-family:Inter,sans-serif;color:{T['textMute']};letter-spacing:0.05em;">vw_source_tracking_enriched</span>
+</div>
+""", unsafe_allow_html=True)
+
+    # Date range selector
     with st.sidebar:
-        st.markdown("### Date range")
-        start_date = st.date_input("Start date", value=date.today() - timedelta(days=DEFAULT_LOOKBACK_DAYS))
-        end_date   = st.date_input("End date",   value=date.today())
+        st.markdown(
+            f'<div style="font-size:10px;font-family:Inter,sans-serif;color:{T["textMute"]};'
+            f'letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">Date range</div>',
+            unsafe_allow_html=True,
+        )
+        end_default   = date.today()
+        start_default = end_default - timedelta(weeks=12)
+        start_date = st.date_input('From', value=start_default, key='st_start')
+        end_date   = st.date_input('To',   value=end_default,   key='st_end')
 
-        if start_date >= end_date:
-            st.error("Start date must be before end date.")
-            return
+    if start_date > end_date:
+        st.warning('Start date must be before end date.')
+        return
 
-    metric = "new_leads"
-
-    # ── load data ─────────────────────────────────────────────────────────────
-    with st.spinner("Loading source tracking data…"):
+    with st.spinner(''):
         df = load_source_tracking(str(start_date), str(end_date))
 
-    if df.empty:
-        st.info("No source tracking data found for the selected date range.")
+    if df is None or df.empty:
+        st.info('No source tracking data for the selected period.')
         return
 
-    # ── clean channel column ──────────────────────────────────────────────────
-    df["initial_channel"] = df["initial_channel"].fillna("(Other)").replace("", "(Other)")
+    # ── KPI row ──────────────────────────────────────────────────────────────
+    prev_start = start_date - (end_date - start_date)
+    with st.spinner(''):
+        df_prev = load_source_tracking(str(prev_start), str(start_date))
 
-    # ── KPIs: totals for date range ───────────────────────────────────────────
-    total_users     = int(df["total_users"].sum())
-    total_leads     = int(df["new_leads"].sum())
-    total_customers = int(df["new_customers"].sum())
-    total_churned   = int(df["new_churned"].sum())
+    def _sum(df_, col):
+        return int(df_[col].sum()) if col in df_.columns else 0
 
-    # split into two halves to compute WoW-style delta
-    weeks_sorted = sorted(df["activity_week"].unique())
-    mid = len(weeks_sorted) // 2
-    first_half  = df[df["activity_week"].isin(weeks_sorted[:mid])]
-    second_half = df[df["activity_week"].isin(weeks_sorted[mid:])]
+    total_users   = _sum(df, 'total_users')
+    new_leads     = _sum(df, 'new_leads')
+    new_customers = _sum(df, 'new_customers')
+    new_churned   = _sum(df, 'new_churned')
 
-    leads_delta     = pct_delta(second_half["new_leads"].sum(),     first_half["new_leads"].sum())
-    customers_delta = pct_delta(second_half["new_customers"].sum(), first_half["new_customers"].sum())
-    users_delta     = pct_delta(second_half["total_users"].sum(),   first_half["total_users"].sum())
+    prev_users    = _sum(df_prev, 'total_users')    if df_prev is not None and not df_prev.empty else 0
+    prev_leads    = _sum(df_prev, 'new_leads')      if df_prev is not None and not df_prev.empty else 0
+    prev_cust     = _sum(df_prev, 'new_customers')  if df_prev is not None and not df_prev.empty else 0
 
-    kpi_row([
-        {"label": "Total users",     "value": f"{total_users:,}",     "delta": users_delta},
-        {"label": "New leads",       "value": f"{total_leads:,}",      "delta": leads_delta},
-        {"label": "New customers",   "value": f"{total_customers:,}",  "delta": customers_delta},
+    def _delta(cur, prev):
+        if prev == 0:
+            return None
+        d = (cur - prev) / prev * 100
+        return f"{'+'if d>=0 else ''}{d:.1f}% vs prev period"
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.markdown(kpi_card_html('Total users',   f'{total_users:,}',   sub=_delta(total_users,   prev_users) or ''),  unsafe_allow_html=True)
+    with c2: st.markdown(kpi_card_html('New leads',     f'{new_leads:,}',     sub=_delta(new_leads,     prev_leads) or '', color=T['lead']),     unsafe_allow_html=True)
+    with c3: st.markdown(kpi_card_html('New customers', f'{new_customers:,}', sub=_delta(new_customers, prev_cust)  or '', color=T['customer']), unsafe_allow_html=True)
+    with c4: st.markdown(kpi_card_html('Churned',       f'{new_churned:,}',                                                color='#f87171'),    unsafe_allow_html=True)
+
+    st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
+
+    # ── Tabs ─────────────────────────────────────────────────────────────────
+    tab_leads, tab_customers, tab_trends, tab_rates = st.tabs([
+        'Leads by source',
+        'Customers by source',
+        'WoW trends',
+        'Conversion rates',
     ])
 
-    st.write("")
-
-    # ── date range label ──────────────────────────────────────────────────────
-    n_weeks = len(weeks_sorted)
-    st.markdown(
-        f'<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:16px;">'
-        f'Showing <b style="color:#e8a838;">{n_weeks} weeks</b> from '
-        f'<b style="color:#f0ede4;">{start_date}</b> to '
-        f'<b style="color:#f0ede4;">{end_date}</b></p>',
-        unsafe_allow_html=True,
-    )
-
-    # ── tabs: Leads | Customers | Both ────────────────────────────────────────
-    tab_leads, tab_customers, tab_compare = st.tabs(
-        ["📥 Leads by source", "🎯 Customers by source", "📈 Week-over-week trend"]
-    )
-
     with tab_leads:
-        _render_source_breakdown(df, "new_leads", "New leads by channel")
+        col_chart, col_table = st.columns([2, 3], gap='large')
+        with col_chart:
+            st.markdown(section_label_html('New leads by channel'), unsafe_allow_html=True)
+            st.plotly_chart(
+                source_bar_chart(df, 'new_leads', title=''),
+                use_container_width=True,
+                config={'displayModeBar': False},
+            )
+        with col_table:
+            st.markdown(section_label_html('Weekly leads — channel × week'), unsafe_allow_html=True)
+            _render_pivot(df, 'new_leads')
 
     with tab_customers:
-        _render_source_breakdown(df, "new_customers", "New customers by channel")
+        col_chart, col_table = st.columns([2, 3], gap='large')
+        with col_chart:
+            st.markdown(section_label_html('New customers by channel'), unsafe_allow_html=True)
+            st.plotly_chart(
+                source_bar_chart(df, 'new_customers', title=''),
+                use_container_width=True,
+                config={'displayModeBar': False},
+            )
+        with col_table:
+            st.markdown(section_label_html('Weekly customers — channel × week'), unsafe_allow_html=True)
+            _render_pivot(df, 'new_customers')
 
-    with tab_compare:
-        _render_wow_trend(df, metric, weeks_sorted)
-
-    st.divider()
-
-    # ── raw data table ────────────────────────────────────────────────────────
-    with st.expander("Raw source tracking data", expanded=False):
-        section_label(f"{len(df):,} rows")
-
-        display = df.copy()
-        display["activity_week"] = display["activity_week"].dt.strftime("%Y-%m-%d")
-
-        # round float rates
-        rate_cols = ["visitor_to_lead_rate", "lead_to_signup_rate",
-                     "signup_to_customer_rate", "visitor_to_customer_rate"]
-        for col in rate_cols:
-            if col in display.columns:
-                display[col] = display[col].apply(lambda x: f"{x:.3f}" if x else "—")
-
-        st.dataframe(
-            display,
-            use_container_width=True,
-            height=400,
-            hide_index=True,
-        )
-
-
-def _render_source_breakdown(df: pd.DataFrame, metric: str, title: str):
-    """Bar chart + week-by-channel pivot table for one metric."""
-    col_bar, col_pivot = st.columns([1, 1], gap="medium")
-
-    with col_bar:
-        section_label("By channel — full period")
-        fig = source_bar_chart(df, metric, title)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    with col_pivot:
-        section_label("By channel × week")
-
-        pivot = (
-            df.groupby(["initial_channel", "activity_week"])[metric]
+    with tab_trends:
+        col_leads, col_customers = st.columns(2, gap='large')
+        top6 = (
+            df.groupby('initial_channel')['new_leads']
             .sum()
-            .unstack(level="activity_week")
-            .fillna(0)
-            .astype(int)
+            .sort_values(ascending=False)
+            .head(6)
+            .index.tolist()
         )
-        pivot.columns = [c.strftime("%b %d") if hasattr(c, "strftime") else str(c) for c in pivot.columns]
-        pivot.index.name = "Channel"
-        pivot["Total"] = pivot.sum(axis=1)
-        pivot = pivot.sort_values("Total", ascending=False)
+        with col_leads:
+            st.markdown(section_label_html('Leads — week over week'), unsafe_allow_html=True)
+            st.plotly_chart(
+                wow_comparison_chart(df, 'new_leads', top6),
+                use_container_width=True,
+                config={'displayModeBar': False},
+            )
+        with col_customers:
+            st.markdown(section_label_html('Customers — week over week'), unsafe_allow_html=True)
+            top6c = (
+                df.groupby('initial_channel')['new_customers']
+                .sum()
+                .sort_values(ascending=False)
+                .head(6)
+                .index.tolist()
+            )
+            st.plotly_chart(
+                wow_comparison_chart(df, 'new_customers', top6c),
+                use_container_width=True,
+                config={'displayModeBar': False},
+            )
 
-        st.dataframe(
-            pivot,
-            use_container_width=True,
-            height=380,
-            column_config={
-                col: st.column_config.NumberColumn(col, format="%d")
-                for col in pivot.columns
-            },
+    with tab_rates:
+        _render_rates(df)
+
+
+# ── pivot table ───────────────────────────────────────────────────────────────
+
+def _render_pivot(df: pd.DataFrame, metric: str) -> None:
+    if 'activity_week' not in df.columns or 'initial_channel' not in df.columns:
+        return
+    pivot = (
+        df.groupby(['initial_channel', 'activity_week'])[metric]
+        .sum()
+        .unstack('activity_week')
+        .fillna(0)
+        .astype(int)
+    )
+    pivot.columns = [pd.to_datetime(c).strftime('%b %d') for c in pivot.columns]
+    pivot = pivot.sort_values(pivot.columns[-1], ascending=False)
+
+    # Render as HTML table
+    cols = list(pivot.columns)
+    channel_col = f'font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};padding:8px 12px;border-right:1px solid {T["border"]};'
+    val_col     = f'font-size:11px;font-family:Inter,sans-serif;color:{T["textMute"]};padding:8px 10px;text-align:right;border-right:1px solid {T["border"]};'
+    th_s        = f'font-size:10px;font-family:Inter,sans-serif;color:{T["textMute"]};letter-spacing:0.06em;text-transform:uppercase;padding:7px 10px;text-align:right;border-right:1px solid {T["border"]};background:{T["surface"]};'
+
+    ncols = min(len(cols), 8)
+    display_cols = cols[-ncols:]
+
+    html = (
+        f'<div style="overflow-x:auto;">'
+        f'<table style="width:100%;border-collapse:collapse;background:{T["bg2"]};'
+        f'border:1px solid {T["border"]};border-radius:8px;overflow:hidden;">'
+        f'<thead><tr>'
+        f'<th style="{th_s}text-align:left;min-width:140px;">Channel</th>'
+    )
+    for c in display_cols:
+        html += f'<th style="{th_s}">{c}</th>'
+    html += '</tr></thead><tbody>'
+
+    for ch, row in pivot.iterrows():
+        meta = CHANNEL_META.get(ch, {'dot': T['textMute']})
+        html += (
+            f'<tr style="border-top:1px solid {T["border"]};">'
+            f'<td style="{channel_col}">'
+            f'<div style="display:flex;align-items:center;gap:6px;">'
+            f'<span style="width:5px;height:5px;border-radius:50%;background:{meta["dot"]};display:inline-block;flex-shrink:0;"></span>'
+            f'<span>{ch}</span></div></td>'
         )
+        for c in display_cols:
+            val = int(row.get(c, 0))
+            color = T['lead'] if val > 0 else T['textMute']
+            html += f'<td style="{val_col}color:{color};">{val if val > 0 else "—"}</td>'
+        html += '</tr>'
 
-    # ── conversion rates for selected metric ──────────────────────────────────
-    st.write("")
-    section_label("Conversion rates by channel")
-
-    rate_col = "visitor_to_customer_rate" if metric == "new_customers" else "visitor_to_lead_rate"
-    rate_agg = (
-        df[df[rate_col] > 0]
-        .groupby("initial_channel")[[metric, rate_col]]
-        .agg({metric: "sum", rate_col: "mean"})
-        .reset_index()
-        .sort_values(metric, ascending=False)
-        .head(10)
-    )
-    rate_agg[rate_col] = (rate_agg[rate_col] * 100).round(2)
-    rate_agg.columns = ["Channel", metric.replace("_", " ").title(), "Avg rate (%)"]
-    st.dataframe(rate_agg, use_container_width=True, hide_index=True)
+    html += '</tbody></table></div>'
+    st.markdown(html, unsafe_allow_html=True)
 
 
-def _render_wow_trend(df: pd.DataFrame, metric: str, weeks_sorted):
-    """Line chart showing metric over weeks by top channels."""
-    agg = (
-        df.groupby(["activity_week", "initial_channel"])[metric]
-        .sum()
-        .reset_index()
-    )
+# ── conversion rates ─────────────────────────────────────────────────────────
 
-    # determine top channels by total volume
-    top_channels = (
-        agg.groupby("initial_channel")[metric]
-        .sum()
-        .sort_values(ascending=False)
-        .head(6)
-        .index.tolist()
-    )
-
-    selected_channels = top_channels
-
-    if not selected_channels:
-        st.info("Select at least one channel in the sidebar.")
+def _render_rates(df: pd.DataFrame) -> None:
+    rate_cols = ['visitor_to_lead_rate', 'lead_to_signup_rate', 'signup_to_customer_rate', 'visitor_to_customer_rate']
+    available = [c for c in rate_cols if c in df.columns]
+    if not available:
+        st.markdown(f'<div style="color:{T["textMute"]};font-size:12px;padding:20px 0;">No conversion rate data available.</div>', unsafe_allow_html=True)
         return
 
-    filtered_agg = agg[agg["initial_channel"].isin(selected_channels)]
+    agg = df.groupby('initial_channel')[available].mean().reset_index()
+    agg = agg.sort_values(available[0] if available else available[0], ascending=False)
 
-    section_label(f"{metric.replace('_', ' ').title()} by channel · weekly")
-    fig = wow_comparison_chart(filtered_agg, metric, selected_channels)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    cols_display = {
+        'visitor_to_lead_rate':       'Visitor → Lead',
+        'lead_to_signup_rate':        'Lead → Signup',
+        'signup_to_customer_rate':    'Signup → Customer',
+        'visitor_to_customer_rate':   'Visitor → Customer',
+    }
 
-    # totals summary below the chart
-    st.write("")
-    section_label("Period totals per channel")
-    totals = (
-        filtered_agg.groupby("initial_channel")[metric]
-        .sum()
-        .reset_index()
-        .sort_values(metric, ascending=False)
+    th_s = f'font-size:10px;font-family:Inter,sans-serif;color:{T["textMute"]};letter-spacing:0.06em;text-transform:uppercase;padding:7px 12px;text-align:right;border-right:1px solid {T["border"]};background:{T["surface"]};'
+    td_s = f'font-size:11px;font-family:Inter,sans-serif;color:{T["textMute"]};padding:8px 12px;text-align:right;border-right:1px solid {T["border"]};'
+
+    html = (
+        f'<div style="overflow-x:auto;">'
+        f'<table style="width:100%;border-collapse:collapse;background:{T["bg2"]};'
+        f'border:1px solid {T["border"]};border-radius:8px;overflow:hidden;">'
+        f'<thead><tr><th style="{th_s}text-align:left;min-width:140px;">Channel</th>'
     )
-    totals.columns = ["Channel", metric.replace("_", " ").title()]
-    totals["Share %"] = (totals[totals.columns[1]] / totals[totals.columns[1]].sum() * 100).round(1)
+    for col in available:
+        html += f'<th style="{th_s}">{cols_display.get(col, col)}</th>'
+    html += '</tr></thead><tbody>'
 
-    st.dataframe(totals, use_container_width=True, hide_index=True)
+    for _, r in agg.iterrows():
+        ch = r['initial_channel']
+        meta = CHANNEL_META.get(ch, {'dot': T['textMute']})
+        html += (
+            f'<tr style="border-top:1px solid {T["border"]};">'
+            f'<td style="{td_s}text-align:left;">'
+            f'<div style="display:flex;align-items:center;gap:6px;">'
+            f'<span style="width:5px;height:5px;border-radius:50%;background:{meta["dot"]};display:inline-block;flex-shrink:0;"></span>'
+            f'<span style="color:{T["textDim"]};">{ch}</span></div></td>'
+        )
+        for col in available:
+            val = r.get(col, 0)
+            pct_str = f'{val*100:.1f}%' if pd.notna(val) and val > 0 else '—'
+            color   = T['customer'] if (pd.notna(val) and val > 0.1) else T['textMute']
+            html += f'<td style="{td_s}color:{color};">{pct_str}</td>'
+        html += '</tr>'
+
+    html += '</tbody></table></div>'
+    st.markdown(section_label_html('Avg. conversion rates by channel'), unsafe_allow_html=True)
+    st.markdown(html, unsafe_allow_html=True)

@@ -1,199 +1,190 @@
-"""
-Overview page — CDP health dashboard.
-Shows KPIs, week-over-week growth, status donut, and a conversion funnel.
-"""
-
 import streamlit as st
 import pandas as pd
-from datetime import date
-
-from components.ui import inject_global_css, page_header, kpi_row, section_label, pct_delta
+from utils.data_loader import load_profiles, load_profile_growth
+from components.ui import (
+    T, inject_global_css, kpi_card_html, section_label_html,
+    STATUS_META, status_badge_html, channel_badge_html, avatar_html,
+)
 from components.charts import weekly_growth_chart, status_donut, conversion_funnel
-from utils.data_loader import load_profiles, load_profile_growth, load_source_tracking
 
 
 def render():
     inject_global_css()
-    page_header(
-        "CDP Overview",
-        subtitle="tab_profiles · vw_source_tracking_enriched",
-    )
 
-    # ── date picker ───────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("### Date range")
-        start_date = st.date_input("Start date", value=date(2026, 3, 1))
-        end_date   = st.date_input("End date",   value=date.today())
-        if start_date >= end_date:
-            st.error("Start date must be before end date.")
-            return
+    st.markdown(f"""
+<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px;">
+  <h1 style="font-size:20px;font-weight:600;letter-spacing:-0.01em;color:{T['text']};">Overview</h1>
+  <span style="font-size:11px;font-family:Inter,sans-serif;color:{T['textMute']};letter-spacing:0.05em;">CDP health</span>
+</div>
+""", unsafe_allow_html=True)
 
-    # ── load data ─────────────────────────────────────────────────────────────
-    with st.spinner("Loading profiles…"):
-        df_profiles = load_profiles()
-
-    with st.spinner("Loading growth data…"):
+    with st.spinner(''):
+        df = load_profiles()
         df_growth = load_profile_growth()
 
-    # ── filter to date range ──────────────────────────────────────────────────
-    start_ts = pd.Timestamp(start_date, tz="UTC")
-    end_ts   = pd.Timestamp(end_date,   tz="UTC") + pd.Timedelta(days=1)
-    df_filtered = df_profiles[
-        df_profiles["profile_date"].between(start_ts, end_ts, inclusive="left")
-    ]
+    if df is None or df.empty:
+        st.error('No data available.')
+        return
 
-    # ── derive KPIs ───────────────────────────────────────────────────────────
-    total = len(df_filtered)
-    status_counts = df_filtered["status"].value_counts()
-    n_customer = int(status_counts.get("customer", 0))
-    n_lead     = int(status_counts.get("lead", 0))
-    n_churned  = int(status_counts.get("churned", 0))
+    total     = len(df)
+    customers = int((df['status'] == 'customer').sum())
+    leads     = int((df['status'] == 'lead').sum())
+    signed    = int((df['status'] == 'signed-up').sum())
+    churned   = int((df['status'] == 'churned').sum()) if 'churned' in df['status'].values else 0
 
-    # ── top KPIs ──────────────────────────────────────────────────────────────
-    kpi_row([
-        {"label": "Total profiles",  "value": f"{total:,}",      "delta": None},
-        {"label": "Customers",        "value": f"{n_customer:,}", "delta": f"{n_customer/total*100:.0f}% of total" if total else None, "delta_color": "off"},
-        {"label": "Leads",            "value": f"{n_lead:,}",     "delta": f"{n_lead/total*100:.0f}% of total" if total else None, "delta_color": "off"},
-        {"label": "Churned",          "value": f"{n_churned:,}",  "delta": f"{n_churned/total*100:.0f}% of total" if total else None, "delta_color": "off"},
-    ])
+    # KPI cards
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: st.markdown(kpi_card_html('Total profiles', f'{total:,}'),                       unsafe_allow_html=True)
+    with c2: st.markdown(kpi_card_html('Customers',      f'{customers:,}', color=T['customer']),  unsafe_allow_html=True)
+    with c3: st.markdown(kpi_card_html('Leads',          f'{leads:,}',     color=T['lead']),      unsafe_allow_html=True)
+    with c4: st.markdown(kpi_card_html('Signed up',      f'{signed:,}',    color=T['signed']),    unsafe_allow_html=True)
+    with c5: st.markdown(kpi_card_html('Churned',        f'{churned:,}',   color='#f87171'),      unsafe_allow_html=True)
 
-    st.write("")
+    st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
 
-    # ── row 2: growth + donut ─────────────────────────────────────────────────
-    col_growth, col_donut = st.columns([3, 1], gap="medium")
+    # Growth chart + donut
+    col_growth, col_donut = st.columns([3, 1], gap='large')
 
     with col_growth:
-        section_label("Weekly new profiles — by status")
-        if df_growth.empty:
-            st.info("No growth data available.")
+        st.markdown(section_label_html('Profile growth (weekly)'), unsafe_allow_html=True)
+        if df_growth is not None and not df_growth.empty:
+            cutoff = (pd.Timestamp.now() - pd.DateOffset(months=6)).strftime('%Y-%m-%d')
+            st.plotly_chart(
+                weekly_growth_chart(df_growth, start_date=cutoff),
+                use_container_width=True,
+                config={'displayModeBar': False},
+            )
         else:
-            st.plotly_chart(weekly_growth_chart(df_growth), use_container_width=True, config={"displayModeBar": False})
+            st.markdown(f'<div style="color:{T["textMute"]};font-size:12px;padding:20px 0;">No growth data available.</div>', unsafe_allow_html=True)
 
     with col_donut:
-        section_label("Status distribution")
-        counts = {
-            "customer": n_customer,
-            "lead":     n_lead,
-            "churned":  n_churned,
-        }
-        st.plotly_chart(status_donut(counts), use_container_width=True, config={"displayModeBar": False})
+        st.markdown(section_label_html('Status distribution'), unsafe_allow_html=True)
+        counts = df['status'].value_counts().to_dict()
+        st.plotly_chart(status_donut(counts), use_container_width=True, config={'displayModeBar': False})
 
-        # legend
-        for status, color in [("Customer", "#1d9e75"), ("Lead", "#378ADD"), ("Churned", "#D85A30")]:
-            n = counts[status.lower()]
-            pct = n / total * 100 if total else 0
-            st.markdown(
+        legend_html = ''
+        for status, meta in STATUS_META.items():
+            cnt = counts.get(status, 0)
+            if cnt == 0:
+                continue
+            pct = cnt / total * 100 if total else 0
+            legend_html += (
                 f'<div style="display:flex;align-items:center;justify-content:space-between;'
-                f'margin-bottom:4px;">'
-                f'<span style="display:flex;align-items:center;gap:6px;font-size:12px;'
-                f'color:rgba(255,255,255,0.6);">'
-                f'<span style="width:8px;height:8px;border-radius:2px;background:{color};'
-                f'display:inline-block;"></span>{status}</span>'
-                f'<span style="font-family:monospace;font-size:12px;color:#f0ede4;">'
-                f'{n} <span style="color:rgba(255,255,255,0.4);">({pct:.0f}%)</span></span>'
-                f'</div>',
-                unsafe_allow_html=True,
+                f'padding:4px 0;border-bottom:1px solid {T["border"]};">'
+                f'<div style="display:flex;align-items:center;gap:8px;">'
+                f'<span style="width:7px;height:7px;border-radius:50%;background:{meta["color"]};display:inline-block;"></span>'
+                f'<span style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{meta["label"]}</span>'
+                f'</div>'
+                f'<div style="display:flex;align-items:center;gap:10px;">'
+                f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">{pct:.0f}%</span>'
+                f'<span style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};font-weight:500;">{cnt:,}</span>'
+                f'</div></div>'
             )
+        st.markdown(f'<div style="margin-top:4px;">{legend_html}</div>', unsafe_allow_html=True)
 
-    st.divider()
+    st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
 
-    # ── row 3: funnel + health checks ─────────────────────────────────────────
-    col_funnel, col_health = st.columns([1, 1], gap="medium")
+    # Funnel + Health
+    col_funnel, col_health = st.columns([1, 1], gap='large')
 
     with col_funnel:
-        section_label("Aggregate conversion funnel")
-
-        with st.spinner("Loading source data for funnel…"):
-            df_src = load_source_tracking(str(start_date), str(end_date))
-
-        if not df_src.empty:
-            visitors  = int(df_src["total_users"].sum())
-            leads     = int(df_src["new_leads"].sum())
-            signups   = int(df_src["new_signed_up"].sum())
-            customers = int(df_src["new_customers"].sum())
-            st.plotly_chart(
-                conversion_funnel(visitors, leads, signups, customers),
-                use_container_width=True,
-                config={"displayModeBar": False},
-            )
-        else:
-            st.info("No source tracking data in the last 90 days.")
+        st.markdown(section_label_html('Acquisition funnel'), unsafe_allow_html=True)
+        has_signup = int(df['has_signed_up'].sum()) if 'has_signed_up' in df.columns else 0
+        st.plotly_chart(
+            conversion_funnel(total, leads, has_signup, customers),
+            use_container_width=True,
+            config={'displayModeBar': False},
+        )
 
     with col_health:
-        section_label("CDP health checks")
+        st.markdown(section_label_html('CDP health checks'), unsafe_allow_html=True)
 
-        # --- check 1: profiles without form submissions
-        no_forms = df_profiles[
-            df_profiles["first_submission_date"].isna()
-        ]
-        _health_check(
-            "Profiles without form submissions",
-            len(no_forms),
-            total,
-            threshold_pct=20,
+        def health_row(label: str, ok: bool, detail: str = '') -> str:
+            color  = T['customer'] if ok else '#f87171'
+            icon   = '✓' if ok else '✗'
+            bg     = 'rgba(52,211,153,0.08)' if ok else 'rgba(248,113,113,0.08)'
+            border = 'rgba(52,211,153,0.2)'  if ok else 'rgba(248,113,113,0.2)'
+            det = (f'<div style="font-size:11px;font-family:Inter,sans-serif;color:{T["textMute"]};margin-top:2px;">{detail}</div>') if detail else ''
+            return (
+                f'<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;'
+                f'background:{bg};border:1px solid {border};border-radius:6px;margin-bottom:6px;">'
+                f'<span style="font-size:13px;color:{color};font-weight:600;flex-shrink:0;margin-top:1px;">{icon}</span>'
+                f'<div><div style="font-size:12px;font-family:Inter,sans-serif;color:{T["text"]};font-weight:500;">{label}</div>{det}</div>'
+                f'</div>'
+            )
+
+        ch_ok     = df['initial_channel'].notna().mean() > 0.9 if 'initial_channel' in df.columns else False
+        form_ok   = 'form_submissions' in df.columns and df['form_submissions'].notna().any()
+        das_ok    = 'das_id' in df.columns and df['das_id'].notna().any()
+        no_dupes  = df['Email'].duplicated().sum() == 0
+        fresh_ok  = True
+        if 'last_updated_at' in df.columns and df['last_updated_at'].notna().any():
+            latest = pd.to_datetime(df['last_updated_at']).max()
+            try:
+                if latest.tzinfo is None:
+                    latest = latest.tz_localize('UTC')
+                fresh_ok = (pd.Timestamp.now(tz='UTC') - latest).days < 2
+            except Exception:
+                pass
+
+        ch_pct = f'{df["initial_channel"].notna().mean()*100:.0f}% of profiles have a channel' if 'initial_channel' in df.columns else ''
+        form_n  = f'{int(df["form_submissions"].gt(0).sum())} profiles with ≥1 form' if form_ok else ''
+        das_n   = f'{int(df["das_id"].notna().sum())} profiles linked to DAS' if das_ok else ''
+        dup_n   = f'{df["Email"].duplicated().sum()} duplicate email(s) found'
+        fresh_n = 'Updated within last 48 h'
+
+        st.markdown(
+            health_row('Channel data populated',    ch_ok,    ch_pct) +
+            health_row('Form submission data',       form_ok,  form_n) +
+            health_row('DAS linkage active',         das_ok,   das_n) +
+            health_row('No duplicate emails',        no_dupes, dup_n) +
+            health_row('Data freshness',             fresh_ok, fresh_n),
+            unsafe_allow_html=True,
         )
 
-        # --- check 2: profiles missing channel info
-        no_channel = df_profiles[
-            df_profiles["initial_channel"].isna() | (df_profiles["initial_channel"] == "")
-        ]
-        _health_check(
-            "Profiles missing initial channel",
-            len(no_channel),
-            total,
-            threshold_pct=15,
-        )
+    st.markdown('<div style="height:20px;"></div>', unsafe_allow_html=True)
 
-        # --- check 3: customers without DAS ID
-        cust_no_das = df_profiles[
-            (df_profiles["status"] == "customer") & df_profiles["das_id"].isna()
-        ]
-        _health_check(
-            "Customers without DAS ID",
-            len(cust_no_das),
-            n_customer,
-            threshold_pct=10,
-        )
+    # Recent profiles
+    st.markdown(section_label_html('Recent profiles'), unsafe_allow_html=True)
+    recent = df.sort_values('profile_date', ascending=False).head(10)
 
-        # --- check 4: duplicate emails
-        dup_emails = df_profiles["Email"].value_counts()
-        n_dups = int((dup_emails > 1).sum())
-        _health_check(
-            "Duplicate email addresses",
-            n_dups,
-            total,
-            threshold_pct=5,
-        )
+    grid = '2fr 100px 110px 180px 130px'
+    th   = f'font-size:10px;font-family:Inter,sans-serif;color:{T["textMute"]};letter-spacing:0.08em;text-transform:uppercase;'
+    rs   = f'display:grid;grid-template-columns:{grid};gap:12px;padding:10px 14px;border-bottom:1px solid {T["border"]};align-items:center;'
 
-        # --- check 5: last update recency
-        if "last_updated_at" in df_profiles.columns and not df_profiles["last_updated_at"].isna().all():
-            last_update = df_profiles["last_updated_at"].max()
-            hours_ago = (pd.Timestamp.now(tz="UTC") - last_update).total_seconds() / 3600
-            if hours_ago < 24:
-                st.success(f"✓ Last updated {hours_ago:.1f}h ago")
-            elif hours_ago < 72:
-                st.warning(f"⚠ Last updated {hours_ago:.1f}h ago — may be stale")
-            else:
-                st.error(f"✗ Last updated {hours_ago:.1f}h ago — check pipeline")
-
-
-def _health_check(label: str, count: int, total: int, threshold_pct: float):
-    """Render a single health check row."""
-    pct = count / total * 100 if total else 0
-    if pct == 0:
-        icon, color = "✓", "#1d9e75"
-    elif pct <= threshold_pct:
-        icon, color = "⚠", "#e8a838"
-    else:
-        icon, color = "✗", "#D85A30"
-
-    st.markdown(
-        f'<div style="display:flex;align-items:center;justify-content:space-between;'
-        f'background:rgba(255,255,255,0.03);border:0.5px solid rgba(255,255,255,0.07);'
-        f'border-radius:8px;padding:10px 14px;margin-bottom:8px;">'
-        f'<span style="font-size:12px;color:rgba(255,255,255,0.7);">{label}</span>'
-        f'<span style="font-family:monospace;font-size:12px;color:{color};">'
-        f'{icon} {count} ({pct:.1f}%)</span>'
-        f'</div>',
-        unsafe_allow_html=True,
+    table = (
+        f'<div style="display:grid;grid-template-columns:{grid};padding:8px 14px;gap:12px;'
+        f'align-items:center;background:{T["surface"]};border:1px solid {T["border"]};border-radius:8px 8px 0 0;">'
+        f'<div style="{th}">Email</div><div style="{th}">Status</div>'
+        f'<div style="{th}">Profile date</div><div style="{th}">Channel</div>'
+        f'<div style="{th}">Location</div></div>'
+        f'<div style="background:{T["bg2"]};border:1px solid {T["border"]};border-top:none;border-radius:0 0 8px 8px;overflow:hidden;">'
     )
+
+    for _, r in recent.iterrows():
+        fn   = str(r.get('das_first_name') or '').strip()
+        ln   = str(r.get('das_last_name')  or '').strip()
+        name = f'{fn} {ln}'.strip() or r['Email'].split('@')[0].replace('.', ' ').title()
+        ch   = str(r.get('initial_channel') or 'Direct')
+        loc  = ', '.join(filter(None, [str(r.get('initial_city') or ''), str(r.get('initial_country') or '')]))[:22] or '—'
+        try:
+            date_str = pd.to_datetime(r.get('profile_date')).strftime('%Y-%m-%d')
+        except Exception:
+            date_str = '—'
+
+        table += (
+            f'<div style="{rs}">'
+            f'<div style="display:flex;align-items:center;gap:10px;min-width:0;">'
+            f'{avatar_html(name, 22)}'
+            f'<span style="font-size:12px;font-family:Inter,sans-serif;color:{T["text"]};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{r["Email"]}</span>'
+            f'</div>'
+            f'<div>{status_badge_html(r.get("status","lead"))}</div>'
+            f'<div style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{date_str}</div>'
+            f'<div>{channel_badge_html(ch)}</div>'
+            f'<div style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{loc}</div>'
+            f'</div>'
+        )
+
+    table += '</div>'
+    st.markdown(table, unsafe_allow_html=True)

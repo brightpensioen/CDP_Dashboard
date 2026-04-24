@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CDP — Profiles redesign</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #0e1216; color: #e6e8eb; font-family: Inter, system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2a323c; border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  #root { min-height: 100vh; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="profiles-data.jsx"></script>
+<script type="text/babel" src="profiles-ui.jsx"></script>
+<script type="text/babel" src="profiles-list.jsx"></script>
+<script type="text/babel" src="profiles-detail.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+
+<script type="text/babel" data-presets="react">
+// Top-level prototype shell: routes between the list and the detail view,
+// and also exposes a design-canvas overview so list+detail can be viewed
+// side-by-side.
+
+const TWEAKS = /*EDITMODE-BEGIN*/{
+  "startPage": "list",
+  "accent": "#4ade80",
+  "density": "comfortable",
+  "defaultProfile": "rpeters@outlook.com"
+}/*EDITMODE-END*/;
+
+function App() {
+  const [route, setRoute] = React.useState(() => {
+    const saved = localStorage.getItem('cdp_route');
+    if (saved) return JSON.parse(saved);
+    return TWEAKS.startPage === 'canvas'
+      ? { view: 'canvas' }
+      : TWEAKS.startPage === 'list'
+      ? { view: 'list' }
+      : { view: 'detail', email: TWEAKS.defaultProfile };
+  });
+  const [tweaksOpen, setTweaksOpen] = React.useState(false);
+  const [tweaksAvail, setTweaksAvail] = React.useState(false);
+  const [tweaks, setTweaks] = React.useState(TWEAKS);
+
+  React.useEffect(() => { localStorage.setItem('cdp_route', JSON.stringify(route)); }, [route]);
+
+  // Tweaks bridge
+  React.useEffect(() => {
+    const handler = (e) => {
+      if (e.data?.type === '__activate_edit_mode') setTweaksOpen(true);
+      if (e.data?.type === '__deactivate_edit_mode') setTweaksOpen(false);
+    };
+    window.addEventListener('message', handler);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    setTweaksAvail(true);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const updateTweak = (k, v) => {
+    const next = { ...tweaks, [k]: v };
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { [k]: v } }, '*');
+  };
+
+  const goDetail = (email) => setRoute({ view: 'detail', email });
+  const goList = () => setRoute({ view: 'list' });
+  const goCanvas = () => setRoute({ view: 'canvas' });
+
+  const profile = window.PROFILES.find(p => p.email === route.email) || window.PROFILES[0];
+
+  return (
+    <div style={{ minHeight: '100vh', background: TOKENS.bg }}>
+      {/* Prototype nav bar */}
+      <div data-screen-label="00 Nav" style={{
+        position: 'fixed', top: 12, left: 12, zIndex: 1000,
+        display: 'flex', gap: 4, padding: 4,
+        background: 'rgba(21,26,32,0.95)', backdropFilter: 'blur(8px)',
+        border: `1px solid ${TOKENS.border}`, borderRadius: 8,
+        fontFamily: TOKENS.sans, fontSize: 11,
+      }}>
+        <NavBtn active={route.view === 'list'} onClick={goList}>Profiles list</NavBtn>
+        <NavBtn active={route.view === 'detail'} onClick={() => goDetail(tweaks.defaultProfile)}>Profile detail</NavBtn>
+        <NavBtn active={route.view === 'canvas'} onClick={goCanvas}>Compare both</NavBtn>
+      </div>
+
+      {route.view === 'list' && (
+        <div data-screen-label="01 Profiles list">
+          <ProfilesList profiles={window.PROFILES} onOpenDetail={goDetail} />
+        </div>
+      )}
+      {route.view === 'detail' && (
+        <div data-screen-label="02 Profile detail">
+          <ProfileDetail profile={profile} onBack={goList} />
+        </div>
+      )}
+      {route.view === 'canvas' && (
+        <div data-screen-label="03 Compare both" style={{ height: '100vh' }}>
+          <DesignCanvas>
+            <DCSection id="redesign" title="CDP Profiles — redesign" subtitle="What changed: Calendly + WebinarGeek sources highlighted, first-form timeline dropped, Pipedrive-style activity timeline on the detail page.">
+              <DCArtboard id="list" label="A · Profiles list (updated)" width={1200} height={780}>
+                <div style={{ width: '100%', height: '100%', overflow: 'auto' }}>
+                  <ProfilesList profiles={window.PROFILES} onOpenDetail={() => {}} compact />
+                </div>
+              </DCArtboard>
+              <DCArtboard id="detail" label="B · Profile detail with activity timeline" width={1280} height={1100}>
+                <div style={{ width: '100%', height: '100%', overflow: 'auto' }}>
+                  <ProfileDetail profile={window.PROFILES.find(p => p.email === 'jlamaessen@gmail.com')} onBack={() => {}} />
+                </div>
+              </DCArtboard>
+              <DCArtboard id="detail2" label="C · Lead with booked call" width={1280} height={1000}>
+                <div style={{ width: '100%', height: '100%', overflow: 'auto' }}>
+                  <ProfileDetail profile={window.PROFILES.find(p => p.email === 'otishermsen@hotmail.com')} onBack={() => {}} />
+                </div>
+              </DCArtboard>
+            </DCSection>
+          </DesignCanvas>
+        </div>
+      )}
+
+      {/* Tweaks panel */}
+      {tweaksOpen && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 1000,
+          width: 280, background: TOKENS.surface,
+          border: `1px solid ${TOKENS.border}`, borderRadius: 10,
+          padding: 16, fontFamily: TOKENS.sans, fontSize: 12,
+          color: TOKENS.text, boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+        }}>
+          <div style={{ fontSize: 11, fontFamily: TOKENS.mono, letterSpacing: '0.1em', color: TOKENS.textMute, marginBottom: 12 }}>
+            TWEAKS
+          </div>
+
+          <label style={{ fontSize: 10, fontFamily: TOKENS.mono, color: TOKENS.textMute, letterSpacing: '0.05em' }}>
+            START PAGE
+          </label>
+          <div style={{ display: 'flex', gap: 4, background: TOKENS.bg2, borderRadius: 6, padding: 3, marginTop: 5, marginBottom: 14 }}>
+            {['list', 'detail', 'canvas'].map(o => (
+              <button key={o} onClick={() => updateTweak('startPage', o)} style={{
+                flex: 1, border: 'none', padding: '5px 0', borderRadius: 4,
+                background: tweaks.startPage === o ? TOKENS.surfaceHi : 'transparent',
+                color: tweaks.startPage === o ? TOKENS.text : TOKENS.textDim,
+                fontSize: 11, cursor: 'pointer', textTransform: 'capitalize',
+              }}>{o}</button>
+            ))}
+          </div>
+
+          <label style={{ fontSize: 10, fontFamily: TOKENS.mono, color: TOKENS.textMute, letterSpacing: '0.05em' }}>
+            DEFAULT PROFILE
+          </label>
+          <select
+            value={tweaks.defaultProfile}
+            onChange={(e) => updateTweak('defaultProfile', e.target.value)}
+            style={{
+              width: '100%', marginTop: 5, marginBottom: 14,
+              background: TOKENS.bg2, color: TOKENS.text,
+              border: `1px solid ${TOKENS.border}`, borderRadius: 5,
+              padding: '6px 8px', fontSize: 11, fontFamily: TOKENS.mono,
+            }}
+          >
+            {window.PROFILES.slice(0, 12).map(p => (
+              <option key={p.email} value={p.email}>{p.email} · {p.status}</option>
+            ))}
+          </select>
+
+          <div style={{ fontSize: 11, color: TOKENS.textMute, lineHeight: 1.5, paddingTop: 8, borderTop: `1px solid ${TOKENS.border}` }}>
+            Use the nav bar at top-left to jump between views. Click any row in the list to open detail.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NavBtn({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} style={{
+      background: active ? TOKENS.surfaceHi : 'transparent',
+      color: active ? TOKENS.text : TOKENS.textDim,
+      border: 'none', borderRadius: 5,
+      padding: '6px 12px', fontSize: 11, fontFamily: TOKENS.sans,
+      cursor: 'pointer',
+    }}>{children}</button>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

@@ -33,6 +33,19 @@ def get_bq_client() -> bigquery.Client:
     return bigquery.Client(project=PROJECT_ID)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _profile_columns() -> list[str]:
+    """Return column names for tab_profiles (cached 1 h)."""
+    client = get_bq_client()
+    query = f"""
+        SELECT column_name
+        FROM `{PROJECT_ID}.{DATASET}.INFORMATION_SCHEMA.COLUMNS`
+        WHERE table_name = 'tab_profiles'
+        ORDER BY ordinal_position
+    """
+    return [r.column_name for r in client.query(query).result()]
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_profiles() -> pd.DataFrame:
     """
@@ -41,40 +54,7 @@ def load_profiles() -> pd.DataFrame:
     """
     client = get_bq_client()
     query = f"""
-        SELECT
-            Email,
-            status,
-            profile_date,
-            initial_client_id,
-            first_session_date,
-            initial_source,
-            initial_medium,
-            initial_campaign,
-            initial_channel,
-            initial_device_category,
-            initial_browser,
-            initial_operating_system,
-            initial_country,
-            initial_city,
-            form_submissions,
-            first_submission_date,
-            last_submission_date,
-            first_form,
-            has_signed_up,
-            signup_date,
-            days_first_session_to_signup,
-            das_id,
-            das_participant_number,
-            das_first_name,
-            das_last_name,
-            das_member_since,
-            das_cancellation_date,
-            das_paying_since,
-            das_retirement_date,
-            das_status,
-            days_first_session_to_customer,
-            days_signup_to_customer,
-            last_updated_at
+        SELECT *
         FROM `{PROJECT_ID}.{DATASET}.tab_profiles`
         WHERE initial_client_id IS NOT NULL
         ORDER BY profile_date DESC
@@ -87,6 +67,10 @@ def load_profiles() -> pd.DataFrame:
         "last_submission_date", "signup_date", "das_member_since",
         "das_cancellation_date", "das_paying_since", "das_retirement_date",
         "last_updated_at",
+        # webinar / calendly dates
+        "first_webinar_registration_date", "last_webinar_registration_date",
+        "first_calendly_booking_date",     "last_calendly_booking_date",
+        "first_engagement_date",
     ]
     for col in date_cols:
         if col in df.columns:

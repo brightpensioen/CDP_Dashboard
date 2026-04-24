@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { background: transparent; overflow: hidden; font-family: 'Inter', -apple-system, sans-serif; }
+.cdp-row { cursor: pointer; }
+.cdp-row:hover { background: #1f262e !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ── Streamlit component message protocol ────────────────────────────────────
+// All messages TO Streamlit must include isStreamlitMessage: true
+
+function sendToStreamlit(type, payload) {
+  window.parent.postMessage(
+    Object.assign({ isStreamlitMessage: true, type: type }, payload),
+    '*'
+  );
+}
+
+function reportHeight() {
+  sendToStreamlit('streamlit:setFrameHeight', {
+    height: document.documentElement.scrollHeight
+  });
+}
+
+// Listen for render events FROM Streamlit
+window.addEventListener('message', function (e) {
+  var d = e.data;
+  if (!d || d.type !== 'streamlit:render') return;
+
+  var root = document.getElementById('root');
+  root.innerHTML = (d.args && d.args.html) ? d.args.html : '';
+
+  // Attach click handlers to every data-email row
+  root.querySelectorAll('[data-email]').forEach(function (row) {
+    row.addEventListener('click', function () {
+      sendToStreamlit('streamlit:setComponentValue', {
+        value: this.getAttribute('data-email'),
+        dataType: 'json'
+      });
+    });
+  });
+
+  reportHeight();
+});
+
+// Signal ready — Streamlit won't send render until it receives this
+sendToStreamlit('streamlit:componentReady', { apiVersion: 1 });
+</script>
+</body>
+</html>
