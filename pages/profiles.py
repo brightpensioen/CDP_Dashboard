@@ -490,23 +490,53 @@ def render_right_rail(row: pd.Series) -> None:
     medium   = _str(row.get('initial_medium'))
     campaign = _str(row.get('initial_campaign'))
     status   = _str(row.get('status')) or 'lead'
-    lead_score = 92 if status == 'customer' else (68 if status == 'signed-up' else 34)
+    kortingspartner = _str(row.get('signup_kortingspartner'))
+    referrer        = _str(row.get('signup_referrer'))
+    referrer_other  = _str(row.get('signup_referrer_other'))
 
-    snap_rows = (
-        f'<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid {T["border"]};">'
-        f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">Lifecycle</span>'
-        f'{status_badge_html(status)}</div>'
-        f'<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid {T["border"]};">'
-        f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">Lead score</span>'
-        f'<div style="display:flex;align-items:center;gap:8px;">'
-        f'<div style="width:60px;height:4px;background:{T["bg3"]};border-radius:2px;overflow:hidden;">'
-        f'<div style="width:{lead_score}%;height:100%;background:{T["accent"]};border-radius:2px;"></div></div>'
-        f'<span style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{lead_score}</span>'
-        f'</div></div>'
-        f'<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;">'
-        f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">First session</span>'
-        f'<span style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{first}</span></div>'
-    )
+    def _snap_row(label, value, last=False):
+        border = '' if last else f'border-bottom:1px solid {T["border"]};'
+        return (
+            f'<div style="display:flex;align-items:center;justify-content:space-between;'
+            f'padding:8px 14px;{border}">'
+            f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">{label}</span>'
+            f'<span style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{value}</span>'
+            f'</div>'
+        )
+
+    is_customer = (status == 'customer')
+
+    _snap_items = [
+        ('Lifecycle', status_badge_html(status), False, True),   # (label, value_html, last, raw_html)
+    ]
+    if is_customer or kortingspartner:
+        _snap_items.append(('Kortingspartner', kortingspartner or '—', False, False))
+    if is_customer or referrer:
+        _snap_items.append(('Referrer', referrer or '—', False, False))
+    if is_customer or referrer_other:
+        _snap_items.append(('Referrer (other)', referrer_other or '—', False, False))
+    _snap_items.append(('First session', first, True, False))
+
+    snap_rows = ''
+    for i, item in enumerate(_snap_items):
+        label, value, _, raw = item
+        is_last = (i == len(_snap_items) - 1)
+        border = '' if is_last else f'border-bottom:1px solid {T["border"]};'
+        if raw:
+            snap_rows += (
+                f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                f'padding:8px 14px;{border}">'
+                f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">{label}</span>'
+                f'{value}</div>'
+            )
+        else:
+            snap_rows += (
+                f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                f'padding:8px 14px;{border}">'
+                f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">{label}</span>'
+                f'<span style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};">{value}</span>'
+                f'</div>'
+            )
     st.markdown(section_label_html('Snapshot'), unsafe_allow_html=True)
     st.markdown(
         f'<div style="background:{T["surface"]};border:1px solid {T["border"]};border-radius:8px;overflow:hidden;margin-bottom:16px;">'
