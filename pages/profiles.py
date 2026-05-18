@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from pathlib import Path
-from utils.data_loader import load_profiles
+from utils.data_loader import load_profiles, load_all_sessions, load_all_page_views
 
 _COMPONENT_DIR = Path(__file__).parent.parent / 'components' / 'profile_table'
 _profile_table = components.declare_component('profile_table', path=str(_COMPONENT_DIR))
@@ -87,10 +87,12 @@ _SVG = {
     'calendar': '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5H13.5M5.5 2V5M10.5 2V5" stroke-linecap="round"/></svg>',
     'user':     '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5C3.5 10.5 6 9.5 8 9.5S12.5 10.5 13 13.5" stroke-linecap="round"/></svg>',
     'euro':     '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 4.5C11 3.5 9.5 3 8 3C5.5 3 3.5 5 3.5 8S5.5 13 8 13C9.5 13 11 12.5 12 11.5"/><path d="M2.5 7H8M2.5 9H7.5"/></svg>',
+    'screen':   '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5"/><path d="M5.5 13.5H10.5M8 11.5V13.5" stroke-linecap="round"/></svg>',
 }
 
 _TYPE_ICON = {
     'first_session': _SVG['globe'],
+    'session': _SVG['screen'],
     'form_submission': _SVG['form'],
     'webinar_registration': _SVG['video'],
     'calendly_booking': _SVG['calendar'],
@@ -101,6 +103,7 @@ _TYPE_ICON = {
 
 _TYPE_TITLE = {
     'first_session':        'First session started',
+    'session':              'Web session',
     'form_submission':      'Form submission',
     'webinar_registration': 'Webinar registration',
     'calendly_booking':     'Call booked',
@@ -112,11 +115,12 @@ _TYPE_TITLE = {
 
 # ── activity builder ──────────────────────────────────────────────────────────
 
-def build_activities(row: pd.Series) -> list:
+def build_activities(row: pd.Series, sessions_df=None, pages_by_session=None) -> list:
     acts = []
+    has_real_sessions = sessions_df is not None and not sessions_df.empty
 
-    # ── first session ──────────────────────────────────────────────────────────
-    if pd.notna(row.get('first_session_date')):
+    # ── first session (fallback when no GA4 sessions loaded) ──────────────────
+    if not has_real_sessions and pd.notna(row.get('first_session_date')):
         acts.append({
             'type':     'first_session',
             'date':     pd.to_datetime(row['first_session_date'], utc=True),
@@ -130,6 +134,32 @@ def build_activities(row: pd.Series) -> list:
             'city':     _str(row.get('initial_city')),
             'country':  _str(row.get('initial_country')),
         })
+
+    # ── GA4 sessions (when loaded on demand) ──────────────────────────────────
+    if has_real_sessions:
+        _pbs = pages_by_session or {}
+        for _, s in sessions_df.iterrows():
+            if pd.isna(s.get('session_start_timestamp_utc')):
+                continue
+            sid = int(s['session_id']) if pd.notna(s.get('session_id')) else None
+            acts.append({
+                'type':      'session',
+                'date':      s['session_start_timestamp_utc'],
+                'session_id': sid,
+                'duration_s': s.get('session_duration_s'),
+                'landing':   s.get('landing_page_path'),
+                'exit':      s.get('exit_page_path'),
+                'source':    s.get('source'),
+                'medium':    s.get('medium'),
+                'campaign':  s.get('campaign'),
+                'channel':   s.get('channel'),
+                'device':    s.get('device_category'),
+                'browser':   s.get('browser'),
+                'city':      s.get('city'),
+                'country':   s.get('country'),
+                'engaged':   s.get('is_engaged_session'),
+                'pages':     _pbs.get(sid, []) if sid is not None else [],
+            })
 
     # ── form submissions ───────────────────────────────────────────────────────
     # form_submissions is a BQ ARRAY<RECORD> (may be ndarray, list, or None)
@@ -314,6 +344,64 @@ def _activity_body(a: dict) -> str:
         return f'<div style="margin-top:4px;">{"".join(parts)}</div>' if parts else ''
     if t == 'customer':
         return f'<div style="margin-top:4px;">{kv("participant", a.get("participant"))}</div>'
+    if t == 'session':
+        dur = a.get('duration_s')
+        dur_str = f'{int(dur // 60)}m {int(dur % 60)}s' if (dur is not None and pd.notna(dur)) else '—'
+        engaged = 'Yes' if a.get('engaged') else 'No'
+        loc = ', '.join(filter(None, [_str(a.get('city')), _str(a.get('country'))])) or '—'
+        device = ' · '.join(filter(None, [_str(a.get('device')), _str(a.get('browser'))])) or '—'
+        body = (
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 20px;margin-top:4px;">'
+            + kv('landing',  a.get('landing') or '—')
+            + kv('exit',     a.get('exit') or '—')
+            + kv('channel',  a.get('channel') or '—')
+            + kv('source',   a.get('source') or '(direct)')
+            + kv('duration', dur_str)
+            + kv('engaged',  engaged)
+            + kv('device',   device)
+            + kv('location', loc)
+            + '</div>'
+        )
+        pages = a.get('pages') or []
+        if pages:
+            page_rows = ''
+            for p in pages:
+                num   = p.get('num') or ''
+                path  = p.get('path') or '—'
+                title = p.get('title') or ''
+                dur   = p.get('duration_s')
+                if dur is not None:
+                    dur = int(dur)
+                    dur_str = f'{dur // 60}m {dur % 60:02d}s' if dur >= 60 else f'{dur}s'
+                else:
+                    dur_str = ''
+                page_rows += (
+                    f'<div style="display:flex;gap:8px;align-items:center;padding:4px 0;'
+                    f'border-bottom:1px solid {T["border"]};">'
+                    f'<span style="font-size:10px;color:{T["textMute"]};min-width:18px;text-align:right;flex-shrink:0;">{num}</span>'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<div style="font-size:11px;color:{T["textDim"]};font-family:Inter,sans-serif;'
+                    f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{path}</div>'
+                    + (f'<div style="font-size:10px;color:{T["textMute"]};font-family:Inter,sans-serif;'
+                       f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{title}</div>' if title else '')
+                    + f'</div>'
+                    + (f'<span style="font-size:10px;color:{T["textMute"]};font-family:Inter,sans-serif;'
+                       f'flex-shrink:0;white-space:nowrap;">{dur_str}</span>' if dur_str else '')
+                    + f'</div>'
+                )
+            body += (
+                f'<details style="margin-top:8px;">'
+                f'<summary style="cursor:pointer;font-size:11px;font-family:Inter,sans-serif;'
+                f'color:{T["textMute"]};letter-spacing:0.02em;list-style:none;'
+                f'display:flex;align-items:center;gap:4px;">'
+                f'<span style="font-size:9px;">▶</span> {len(pages)} pages visited'
+                f'</summary>'
+                f'<div style="margin-top:6px;max-height:220px;overflow-y:auto;'
+                f'border:1px solid {T["border"]};border-radius:4px;padding:4px 8px;">'
+                + page_rows +
+                f'</div></details>'
+            )
+        return body
     return ''
 
 
@@ -686,12 +774,42 @@ def render_raw_tab(row: pd.Series) -> None:
 
 # ── detail view ───────────────────────────────────────────────────────────────
 
-def render_detail(row: pd.Series) -> None:
+def render_detail(row: pd.Series, all_sessions: pd.DataFrame, all_page_views: pd.DataFrame) -> None:
     fn = _str(row.get('das_first_name'))
     ln = _str(row.get('das_last_name'))
     name   = f'{fn} {ln}'.strip() or row['Email'].split('@')[0].replace('.', ' ').title()
     email  = row['Email']
     status = _str(row.get('status')) or 'lead'
+
+    # ── filter pre-fetched bulk data for this profile (in-memory, instant) ──────
+    raw_ids = row.get('all_client_ids')
+    try:
+        client_ids = tuple(str(x) for x in raw_ids) if raw_ids is not None and len(raw_ids) > 0 else ()
+    except Exception:
+        client_ids = ()
+
+    client_ids_set = set(client_ids)
+    sessions_df = (
+        all_sessions[all_sessions['user_pseudo_id'].isin(client_ids_set)].copy()
+        if client_ids_set and not all_sessions.empty else pd.DataFrame()
+    )
+    session_ids_set = set(sessions_df['session_id'].dropna().astype(int)) if not sessions_df.empty else set()
+    pv_df = (
+        all_page_views[all_page_views['session_id'].isin(session_ids_set)].copy()
+        if session_ids_set and not all_page_views.empty else pd.DataFrame()
+    )
+    pages_by_session = {}
+    for _, pv in pv_df.iterrows():
+        sid = pv.get('session_id')
+        if sid is None or not pd.notna(sid):
+            continue
+        dur = pv.get('page_duration_s')
+        pages_by_session.setdefault(int(sid), []).append({
+            'num':        int(pv['page_number']) if pd.notna(pv.get('page_number')) else '',
+            'path':       pv.get('path') or '',
+            'title':      pv.get('title') or '',
+            'duration_s': int(dur) if dur is not None and pd.notna(dur) else None,
+        })
 
     if st.button('← Profiles', key='back_btn'):
         st.session_state.profile_email = None
@@ -781,14 +899,15 @@ def render_detail(row: pd.Series) -> None:
 </div>
 """, unsafe_allow_html=True)
 
-    activities  = build_activities(row)
+    activities  = build_activities(row, sessions_df=sessions_df, pages_by_session=pages_by_session)
+    session_count = sum(1 for a in activities if a['type'] == 'session')
     eng_count   = sum(1 for a in activities if a['type'] in ('form_submission', 'webinar_registration', 'calendly_booking'))
 
     col_main, col_rail = st.columns([2, 1], gap='large')
 
     with col_main:
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            f'Activity timeline ({len(activities)})',
+            f'Activity timeline ({len(activities)})' + (f' · {session_count} sessions' if session_count else ''),
             f'Engagements ({eng_count})',
             'Acquisition',
             'DAS / Member' + (' ✓' if pd.notna(row.get('das_participant_number')) else ''),
@@ -1047,7 +1166,14 @@ def render():
         st.session_state['profile_page'] = 0
 
     with st.spinner(''):
-        df = load_profiles()
+        df           = load_profiles()
+        try:
+            all_sessions   = load_all_sessions()
+            all_page_views = load_all_page_views()
+        except Exception as e:
+            st.warning(f'Could not load session history: {e}')
+            all_sessions   = pd.DataFrame()
+            all_page_views = pd.DataFrame()
 
     if df is None or df.empty:
         st.error('No profile data available.')
@@ -1067,7 +1193,7 @@ def render():
     if st.session_state.profile_email:
         mask = df['Email'] == st.session_state.profile_email
         if mask.any():
-            render_detail(df[mask].iloc[0])
+            render_detail(df[mask].iloc[0], all_sessions, all_page_views)
             return
         st.session_state.profile_email = None
 

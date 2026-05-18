@@ -55,6 +55,7 @@ ACTIVITY_META = {
     'signup':               {'label': 'Signed up',            'color': '#fbbf24', 'bg': 'rgba(251,191,36,0.12)'},
     'customer':             {'label': 'Became customer',      'color': '#34d399', 'bg': 'rgba(52,211,153,0.14)'},
     'paying_started':       {'label': 'Started paying',       'color': '#34d399', 'bg': 'rgba(52,211,153,0.14)'},
+    'session':              {'label': 'Session',              'color': '#9aa3ad', 'bg': 'rgba(154,163,173,0.10)'},
 }
 
 # Keep old names as aliases so other modules don't break

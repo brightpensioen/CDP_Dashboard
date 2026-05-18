@@ -15,6 +15,11 @@ import json
 PROJECT_ID = "prj-data-warehousing"
 DATASET = "ds_cdp"
 
+SESSIONS_PROJECT_ID = "prj-data-ingestion-435806"
+SESSIONS_DATASET    = "superform_outputs_482420450"
+SESSIONS_TABLE      = "ga4_sessions"
+EVENTS_TABLE        = "ga4_events"
+
 
 def get_bq_client() -> bigquery.Client:
     """
@@ -151,4 +156,93 @@ def load_profile_growth() -> pd.DataFrame:
     df = client.query(query).to_dataframe()
     df["week"] = pd.to_datetime(df["week"], errors="coerce")
     df["new_profiles"] = pd.to_numeric(df["new_profiles"], errors="coerce").fillna(0)
+    return df
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_all_sessions() -> pd.DataFrame:
+    """
+    All GA4 sessions for all known profiles, joined via tab_profiles.all_client_ids.
+    Cached 10 minutes. One bulk query at startup; per-profile views are in-memory filters.
+    """
+    client = get_bq_client()
+    query = f"""
+        SELECT
+            s.session_id,
+            s.user_pseudo_id,
+            s.time.session_start_timestamp_utc,
+            s.time.session_duration_s,
+            s.landing_page.landing_page_path,
+            s.exit_page.exit_page_path,
+            s.session_source.source,
+            s.session_source.medium,
+            s.session_source.campaign,
+            s.session_source.default_channel_grouping AS channel,
+            s.device.category                         AS device_category,
+            s.device.web_info.browser                 AS browser,
+            s.geo.city,
+            s.geo.country,
+            s.session_info.is_engaged_session
+        FROM `{SESSIONS_PROJECT_ID}.{SESSIONS_DATASET}.{SESSIONS_TABLE}` s
+        INNER JOIN (
+            SELECT DISTINCT cid AS user_pseudo_id
+            FROM `{PROJECT_ID}.{DATASET}.tab_profiles`,
+            UNNEST(all_client_ids) AS cid
+            WHERE cid IS NOT NULL
+        ) p ON s.user_pseudo_id = p.user_pseudo_id
+        ORDER BY s.time.session_start_timestamp_utc DESC
+    """
+    df = client.query(query).to_dataframe()
+    if not df.empty:
+        df["session_start_timestamp_utc"] = pd.to_datetime(
+            df["session_start_timestamp_utc"], errors="coerce", utc=True
+        )
+        df["session_duration_s"] = pd.to_numeric(df["session_duration_s"], errors="coerce")
+        df["session_id"]         = pd.to_numeric(df["session_id"],         errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_all_page_views() -> pd.DataFrame:
+    """
+    All page-view events (one row per page visit per session) for all known profiles.
+    Groups by session_id + page_number to deduplicate reprocessing runs while
+    preserving revisits to the same URL within a session.
+    Includes page_number and page_duration_s computed in pandas after loading.
+    Cached 10 minutes.
+    """
+    client = get_bq_client()
+    query = f"""
+        SELECT
+            e.session_id,
+            CAST(e.session_info.page_number AS INT64) AS page_number_raw,
+            ANY_VALUE(e.page.path)                   AS path,
+            ANY_VALUE(e.page.title)                  AS title,
+            MIN(e.time.event_timestamp_utc)          AS first_visit
+        FROM `{SESSIONS_PROJECT_ID}.{SESSIONS_DATASET}.{EVENTS_TABLE}` e
+        INNER JOIN (
+            SELECT DISTINCT cid AS user_pseudo_id
+            FROM `{PROJECT_ID}.{DATASET}.tab_profiles`,
+            UNNEST(all_client_ids) AS cid
+            WHERE cid IS NOT NULL
+        ) p ON e.user_pseudo_id = p.user_pseudo_id
+        WHERE e.event_name IN ('page_view', 'user_engagement')
+          AND e.session_id IS NOT NULL
+          AND e.session_info.page_number IS NOT NULL
+          AND e.page.path IS NOT NULL
+        GROUP BY e.session_id, e.session_info.page_number
+        ORDER BY e.session_id, first_visit
+    """
+    df = client.query(query).to_dataframe()
+    if not df.empty:
+        df["session_id"]    = pd.to_numeric(df["session_id"],       errors="coerce")
+        df["page_number"]   = pd.to_numeric(df["page_number_raw"],  errors="coerce")
+        df["first_visit"]   = pd.to_datetime(df["first_visit"],     errors="coerce", utc=True)
+        df.drop(columns=["page_number_raw"], inplace=True)
+        df = df.sort_values(["session_id", "page_number"]).reset_index(drop=True)
+        df["next_visit"]      = df.groupby("session_id")["first_visit"].shift(-1)
+        df["page_duration_s"] = (
+            (df["next_visit"] - df["first_visit"]).dt.total_seconds().round(0)
+        )
+        df.drop(columns=["next_visit"], inplace=True)
     return df
