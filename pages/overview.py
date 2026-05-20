@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from utils.data_loader import load_profiles, load_profile_growth
+from utils.data_loader import load_profiles
 from components.ui import (
     T, inject_global_css, kpi_card_html, section_label_html,
     STATUS_META, status_badge_html, channel_badge_html, avatar_html,
@@ -20,7 +20,20 @@ def render():
 
     with st.spinner(''):
         df = load_profiles()
-        df_growth = load_profile_growth()
+
+    # derive weekly growth from the already-loaded profiles dataframe
+    df_growth = pd.DataFrame()
+    if df is not None and not df.empty and 'profile_date' in df.columns:
+        _dates = pd.to_datetime(df['profile_date'], errors='coerce', utc=True).dropna()
+        _idx   = _dates.index
+        _week  = (_dates - pd.to_timedelta(_dates.dt.dayofweek, unit='D')).dt.normalize()
+        df_growth = (
+            df.loc[_idx]
+            .assign(week=_week.values)
+            .groupby(['week', 'status'])
+            .size()
+            .reset_index(name='new_profiles')
+        )
 
     if df is None or df.empty:
         st.error('No data available.')

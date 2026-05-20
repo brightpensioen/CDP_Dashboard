@@ -2,8 +2,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from components.ui import T, CHANNEL_META, STATUS_META
 
-CHANNEL_COLORS = {ch: m['dot'] for ch, m in CHANNEL_META.items()}
-STATUS_COLORS  = {s: m['color'] for s, m in STATUS_META.items()}
+STATUS_COLORS = {s: m['color'] for s, m in STATUS_META.items()}
 
 DARK_LAYOUT = dict(
     paper_bgcolor='rgba(0,0,0,0)',
@@ -63,61 +62,6 @@ def weekly_growth_chart(df_growth: pd.DataFrame, start_date: str = '2026-01-01')
     return fig
 
 
-def source_bar_chart(df: pd.DataFrame, metric: str, title: str = '', top_n: int = 10) -> go.Figure:
-    agg = (
-        df.groupby('initial_channel')[metric]
-        .sum()
-        .reset_index()
-        .sort_values(metric, ascending=True)
-        .tail(top_n)
-    )
-    colors = [CHANNEL_META.get(ch, {'dot': T['textMute']})['dot'] for ch in agg['initial_channel']]
-    fig = go.Figure(go.Bar(
-        x=agg[metric],
-        y=agg['initial_channel'],
-        orientation='h',
-        marker_color=colors,
-        text=agg[metric].astype(int),
-        textposition='outside',
-        textfont=dict(color=T['textDim'], size=11),
-        hovertemplate='<b>%{y}</b><br>' + metric.replace('_', ' ').title() + ': %{x}<extra></extra>',
-    ))
-    h = max(len(agg) * 40 + 60, 200)
-    fig.update_layout(
-        **{k: v for k, v in DARK_LAYOUT.items() if k not in ('colorway', 'legend')},
-        height=h,
-        showlegend=False,
-        title=dict(text=title, font=dict(size=13, color=T['textDim']), x=0),
-        margin=dict(l=8, r=40, t=40, b=8),
-        xaxis=dict(**DARK_LAYOUT['xaxis'], title=''),
-        yaxis=dict(gridcolor='rgba(0,0,0,0)', linecolor='rgba(0,0,0,0)', tickfont=dict(size=11, color=T['textDim'])),
-    )
-    return fig
-
-
-def wow_comparison_chart(df: pd.DataFrame, metric: str, top_channels: list) -> go.Figure:
-    fig = go.Figure()
-    for ch in top_channels:
-        sub = df[df['initial_channel'] == ch].sort_values('activity_week')
-        color = CHANNEL_META.get(ch, {'dot': T['textMute']})['dot']
-        fig.add_trace(go.Scatter(
-            name=ch,
-            x=sub['activity_week'],
-            y=sub[metric],
-            mode='lines+markers',
-            marker=dict(size=5, color=color),
-            line=dict(color=color, width=2),
-            hovertemplate=f'<b>{ch}</b><br>Week: %{{x|%b %d}}<br>{metric}: %{{y}}<extra></extra>',
-        ))
-    fig.update_layout(
-        **{k: v for k, v in DARK_LAYOUT.items() if k != 'colorway'},
-        hovermode='x unified',
-        xaxis=dict(**DARK_LAYOUT['xaxis'], tickformat='%b %d'),
-        yaxis=dict(**DARK_LAYOUT['yaxis']),
-    )
-    return fig
-
-
 def status_donut(counts: dict) -> go.Figure:
     labels = list(counts.keys())
     values = list(counts.values())
@@ -162,31 +106,3 @@ def conversion_funnel(visitors: int, leads: int, signups: int, customers: int) -
     return fig
 
 
-def form_submission_timeline(df_profiles: pd.DataFrame, start_date: str = '2026-01-01') -> go.Figure:
-    df = df_profiles.dropna(subset=['first_submission_date']).copy()
-    df = df[df['first_submission_date'] >= start_date]
-    df['week'] = df['first_submission_date'].dt.to_period('W').dt.start_time
-    agg = df.groupby(['week', 'first_form']).size().reset_index(name='count')
-    top_forms = agg['first_form'].value_counts().head(4).index.tolist()
-
-    palette = [T['form'], T['accent'], T['webinar'], T['call']]
-    fig = go.Figure()
-    for i, form in enumerate(top_forms):
-        sub = agg[agg['first_form'] == form].sort_values('week')
-        color = palette[i % len(palette)]
-        fig.add_trace(go.Scatter(
-            name=form,
-            x=sub['week'],
-            y=sub['count'],
-            mode='lines',
-            fill='tozeroy',
-            line=dict(width=1.5, color=color),
-            fillcolor=color.replace(')', ', 0.12)').replace('rgb', 'rgba') if 'rgb' in color else color + '1f',
-            hovertemplate=f'<b>{form}</b><br>%{{y}}<extra></extra>',
-        ))
-    fig.update_layout(
-        **{k: v for k, v in DARK_LAYOUT.items() if k != 'colorway'},
-        xaxis=dict(**DARK_LAYOUT['xaxis'], tickformat='%b %d'),
-        yaxis=dict(**DARK_LAYOUT['yaxis']),
-    )
-    return fig

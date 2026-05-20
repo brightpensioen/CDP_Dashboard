@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from pathlib import Path
-from utils.data_loader import load_profiles, load_all_sessions, load_all_page_views
+from utils.data_loader import load_profiles, load_profile_sessions
 
 _COMPONENT_DIR = Path(__file__).parent.parent / 'components' / 'profile_table'
 _profile_table = components.declare_component('profile_table', path=str(_COMPONENT_DIR))
@@ -53,6 +53,74 @@ def _to_list(v) -> list | None:
         return None
 
 
+def _process_tab_sessions(sessions_raw: pd.DataFrame):
+    """
+    Convert tab_sessions rows into (sessions_df, pages_by_session) matching the
+    shape that build_activities() and _activity_body() expect.
+    Derives landing/exit pages, duration, and per-page detail from the inline events array.
+    """
+    sessions_list = []
+    pages_by_session: dict = {}
+
+    for _, s in sessions_raw.iterrows():
+        events = _to_list(s.get('events')) or []
+        page_events = [e for e in events if isinstance(e, dict) and e.get('page_path')]
+
+        landing   = page_events[0].get('page_path') if page_events else None
+        exit_page = page_events[-1].get('page_path') if page_events else None
+
+        ts_list = []
+        for e in events:
+            if isinstance(e, dict) and e.get('event_timestamp'):
+                try:
+                    ts_list.append(pd.to_datetime(e['event_timestamp'], utc=True))
+                except Exception:
+                    pass
+        duration_s = (max(ts_list) - min(ts_list)).total_seconds() if len(ts_list) >= 2 else None
+
+        sessions_list.append({
+            'session_id':                  s.get('session_id'),
+            'session_start_timestamp_utc': s.get('session_start_timestamp_utc'),
+            'session_duration_s':          duration_s,
+            'landing_page_path':           landing,
+            'exit_page_path':              exit_page,
+            'source':                      s.get('source'),
+            'medium':                      s.get('medium'),
+            'campaign':                    s.get('campaign'),
+            'channel':                     s.get('default_channel_grouping'),
+            'device_category':             s.get('device_category'),
+            'browser':                     s.get('browser'),
+            'city':                        s.get('city'),
+            'country':                     s.get('country'),
+            'is_engaged_session':          None,
+            'session_type':                str(s.get('session_type') or 'website'),
+        })
+
+        sid = s.get('session_id')
+        if sid is not None and pd.notna(sid):
+            page_list = []
+            for i, e in enumerate(page_events):
+                next_e = page_events[i + 1] if i + 1 < len(page_events) else None
+                page_dur = None
+                if next_e and e.get('event_timestamp') and next_e.get('event_timestamp'):
+                    try:
+                        t0 = pd.to_datetime(e['event_timestamp'], utc=True)
+                        t1 = pd.to_datetime(next_e['event_timestamp'], utc=True)
+                        page_dur = int((t1 - t0).total_seconds())
+                    except Exception:
+                        pass
+                page_list.append({
+                    'num':        i + 1,
+                    'path':       e.get('page_path') or '',
+                    'title':      e.get('page_title') or '',
+                    'duration_s': page_dur,
+                })
+            pages_by_session[int(sid)] = page_list
+
+    sessions_df = pd.DataFrame(sessions_list) if sessions_list else pd.DataFrame()
+    return sessions_df, pages_by_session
+
+
 def _list_or_int(row, list_col: str, count_col: str = '', date_col: str = '') -> int:
     """Return count from a BQ ARRAY column (list/ndarray), a count column, or presence of a date."""
     lst = _to_list(row.get(list_col))
@@ -91,8 +159,9 @@ _SVG = {
 }
 
 _TYPE_ICON = {
-    'first_session': _SVG['globe'],
-    'session': _SVG['screen'],
+    'first_session':   _SVG['globe'],
+    'session_website': _SVG['globe'],
+    'session_portal':  _SVG['screen'],
     'form_submission': _SVG['form'],
     'webinar_registration': _SVG['video'],
     'calendly_booking': _SVG['calendar'],
@@ -103,7 +172,8 @@ _TYPE_ICON = {
 
 _TYPE_TITLE = {
     'first_session':        'First session started',
-    'session':              'Web session',
+    'session_website':      'Website session',
+    'session_portal':       'Portal session',
     'form_submission':      'Form submission',
     'webinar_registration': 'Webinar registration',
     'calendly_booking':     'Call booked',
@@ -142,8 +212,9 @@ def build_activities(row: pd.Series, sessions_df=None, pages_by_session=None) ->
             if pd.isna(s.get('session_start_timestamp_utc')):
                 continue
             sid = int(s['session_id']) if pd.notna(s.get('session_id')) else None
+            stype = _str(s.get('session_type')) or 'website'
             acts.append({
-                'type':      'session',
+                'type':      'session_portal' if stype == 'portal' else 'session_website',
                 'date':      s['session_start_timestamp_utc'],
                 'session_id': sid,
                 'duration_s': s.get('session_duration_s'),
@@ -344,7 +415,7 @@ def _activity_body(a: dict) -> str:
         return f'<div style="margin-top:4px;">{"".join(parts)}</div>' if parts else ''
     if t == 'customer':
         return f'<div style="margin-top:4px;">{kv("participant", a.get("participant"))}</div>'
-    if t == 'session':
+    if t in ('session_website', 'session_portal'):
         dur = a.get('duration_s')
         dur_str = f'{int(dur // 60)}m {int(dur % 60)}s' if (dur is not None and pd.notna(dur)) else '—'
         engaged = 'Yes' if a.get('engaged') else 'No'
@@ -804,42 +875,22 @@ def render_raw_tab(row: pd.Series) -> None:
 
 # ── detail view ───────────────────────────────────────────────────────────────
 
-def render_detail(row: pd.Series, all_sessions: pd.DataFrame, all_page_views: pd.DataFrame) -> None:
+def render_detail(row: pd.Series) -> None:
     fn = _str(row.get('das_first_name'))
     ln = _str(row.get('das_last_name'))
     name   = f'{fn} {ln}'.strip() or row['Email'].split('@')[0].replace('.', ' ').title()
     email  = row['Email']
     status = _str(row.get('status')) or 'lead'
 
-    # ── filter pre-fetched bulk data for this profile (in-memory, instant) ──────
-    raw_ids = row.get('all_client_ids')
+    # ── load sessions lazily for this profile ─────────────────────────────────
     try:
-        client_ids = tuple(str(x) for x in raw_ids) if raw_ids is not None and len(raw_ids) > 0 else ()
+        sessions_raw = load_profile_sessions(email)
     except Exception:
-        client_ids = ()
-
-    client_ids_set = set(client_ids)
-    sessions_df = (
-        all_sessions[all_sessions['user_pseudo_id'].isin(client_ids_set)].copy()
-        if client_ids_set and not all_sessions.empty else pd.DataFrame()
+        sessions_raw = pd.DataFrame()
+    sessions_df, pages_by_session = (
+        _process_tab_sessions(sessions_raw) if not sessions_raw.empty
+        else (pd.DataFrame(), {})
     )
-    session_ids_set = set(sessions_df['session_id'].dropna().astype(int)) if not sessions_df.empty else set()
-    pv_df = (
-        all_page_views[all_page_views['session_id'].isin(session_ids_set)].copy()
-        if session_ids_set and not all_page_views.empty else pd.DataFrame()
-    )
-    pages_by_session = {}
-    for _, pv in pv_df.iterrows():
-        sid = pv.get('session_id')
-        if sid is None or not pd.notna(sid):
-            continue
-        dur = pv.get('page_duration_s')
-        pages_by_session.setdefault(int(sid), []).append({
-            'num':        int(pv['page_number']) if pd.notna(pv.get('page_number')) else '',
-            'path':       pv.get('path') or '',
-            'title':      pv.get('title') or '',
-            'duration_s': int(dur) if dur is not None and pd.notna(dur) else None,
-        })
 
     if st.button('← Profiles', key='back_btn'):
         st.session_state.profile_email = None
@@ -907,9 +958,7 @@ def render_detail(row: pd.Series, all_sessions: pd.DataFrame, all_page_views: pd
     forms    = _list_or_int(row, 'form_submissions',       'form_submission_count',      'first_submission_date')
     webinars = _list_or_int(row, 'webinar_registrations', 'webinar_registration_count', 'first_webinar_registration_date')
     calls    = _list_or_int(row, 'calendly_bookings',     'calendly_booking_count',     'first_calendly_booking_date')
-    d_sig = row.get('days_first_session_to_signup')
     d_cus = row.get('days_first_session_to_customer')
-    sig_str = f'{int(d_sig)}d' if pd.notna(d_sig) else '—'
     cus_str = f'{int(d_cus)}d' if pd.notna(d_cus) else '—'
     cus_col = T['signed'] if (pd.notna(d_cus) and d_cus < 0) else T['text']
 
@@ -918,19 +967,18 @@ def render_detail(row: pd.Series, all_sessions: pd.DataFrame, all_page_views: pd
     mv = f'font-size:22px;font-weight:500;font-family:Inter,sans-serif;letter-spacing:-0.02em;'
 
     st.markdown(f"""
-<div style="display:grid;grid-template-columns:repeat(6,1fr);
+<div style="display:grid;grid-template-columns:repeat(5,1fr);
      border-top:1px solid {T['border']};border-bottom:1px solid {T['border']};margin-bottom:0;">
   <div style="{ms}"><div style="{ml}">Days active</div><div style="{mv}color:{T['text']};">{days_active}d</div></div>
   <div style="{ms}"><div style="{ml}">Form submissions</div><div style="{mv}color:{T['form']};">{forms}</div></div>
   <div style="{ms}"><div style="{ml}">Webinar reg.</div><div style="{mv}color:{T['webinar']};">{webinars}</div></div>
   <div style="{ms}"><div style="{ml}">Calls booked</div><div style="{mv}color:{T['call']};">{calls}</div></div>
-  <div style="{ms}"><div style="{ml}">&rarr; Signup</div><div style="{mv}color:{T['text']};">{sig_str}</div></div>
   <div style="padding:14px 18px;"><div style="{ml}">&rarr; Customer</div><div style="{mv}color:{cus_col};">{cus_str}</div></div>
 </div>
 """, unsafe_allow_html=True)
 
     activities  = build_activities(row, sessions_df=sessions_df, pages_by_session=pages_by_session)
-    session_count = sum(1 for a in activities if a['type'] == 'session')
+    session_count = sum(1 for a in activities if a['type'] in ('session_website', 'session_portal'))
     eng_count   = sum(1 for a in activities if a['type'] in ('form_submission', 'webinar_registration', 'calendly_booking'))
 
     col_main, col_rail = st.columns([2, 1], gap='large')
@@ -1037,7 +1085,7 @@ def render_list(df: pd.DataFrame) -> None:
     with col_search:
         query = st.text_input('Search', placeholder='Search email, name, channel…', label_visibility='collapsed', key='profile_search')
     with col_status:
-        status_filter = st.radio('Status filter', ['All', 'Customers', 'Leads'], horizontal=True, label_visibility='collapsed', key='profile_status')
+        status_filter = st.radio('Status filter', ['All', 'Customers Full journey', 'Customers Retroactive', 'Leads'], horizontal=True, label_visibility='collapsed', key='profile_status')
 
     # Filter
     filtered = df.copy()
@@ -1054,9 +1102,12 @@ def render_list(df: pd.DataFrame) -> None:
         )
         filtered = filtered[mask]
 
-    status_map = {'Customers': 'customer', 'Leads': 'lead'}
-    if status_filter in status_map:
-        filtered = filtered[filtered['status'] == status_map[status_filter]]
+    if status_filter == 'Customers Full journey':
+        filtered = filtered[(filtered['status'] == 'customer') & (filtered['days_first_session_to_customer'].fillna(-1) >= 0)]
+    elif status_filter == 'Customers Retroactive':
+        filtered = filtered[(filtered['status'] == 'customer') & (filtered['days_first_session_to_customer'].fillna(0) < 0)]
+    elif status_filter == 'Leads':
+        filtered = filtered[filtered['status'] == 'lead']
 
     if selected_channel:
         filtered = filtered[filtered['initial_channel'].fillna('Direct') == selected_channel]
@@ -1086,7 +1137,7 @@ def render_list(df: pd.DataFrame) -> None:
     )
 
     # Table — rendered in a declare_component iframe for reliable click→Python communication
-    grid = '2fr 100px 96px 180px 130px 120px 72px 88px 110px 28px'
+    grid = '2fr 100px 96px 180px 130px 120px 88px 110px 28px'
     display_rows = filtered.iloc[start_row:end_row]
 
     th = (f'font-size:10px;font-family:Inter,sans-serif;color:{T["textMute"]};'
@@ -1104,7 +1155,6 @@ def render_list(df: pd.DataFrame) -> None:
         f'<div style="{th}">Channel / Source</div>'
         f'<div style="{th}">Location</div>'
         f'<div style="{th}">Engagement</div>'
-        f'<div style="{th};text-align:right;">&rarr; Signup</div>'
         f'<div style="{th};text-align:right;">&rarr; Customer</div>'
         f'<div style="{th}">Name</div>'
         f'<div></div>'
@@ -1125,12 +1175,9 @@ def render_list(df: pd.DataFrame) -> None:
         ch    = _str(r.get('initial_channel')) or 'Direct'
         src   = _str(r.get('initial_source'))
         loc   = ', '.join(filter(None, [_str(r.get('initial_city')), _str(r.get('initial_country'))]))[:22] or '—'
-        d_sig = r.get('days_first_session_to_signup')
         d_cus = r.get('days_first_session_to_customer')
-        sig_s = f'{int(d_sig)}d' if pd.notna(d_sig) else '—'
         cus_s = f'{int(d_cus)}d' if pd.notna(d_cus) else '—'
         cus_c = T['signed'] if (pd.notna(d_cus) and d_cus < 0) else T['textDim']
-        sig_c = T['textMute'] if sig_s == '—' else T['textDim']
         src_span = (f'<span style="font-size:11px;color:{T["textMute"]};font-family:Inter,sans-serif;">{src}</span>'
                     if src else '')
 
@@ -1149,7 +1196,6 @@ def render_list(df: pd.DataFrame) -> None:
             f'<div style="font-size:11px;font-family:Inter,sans-serif;color:{T["textDim"]};'
             f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{loc}</div>'
             f'<div>{engagement_badges_html(_list_or_int(r, "form_submissions", date_col="first_submission_date"), _list_or_int(r, "webinar_registrations", "webinar_registration_count", "first_webinar_registration_date"), _list_or_int(r, "calendly_bookings", "calendly_booking_count", "first_calendly_booking_date"))}</div>'
-            f'<div style="font-size:11px;font-family:Inter,sans-serif;color:{sig_c};text-align:right;">{sig_s}</div>'
             f'<div style="font-size:11px;font-family:Inter,sans-serif;color:{cus_c};text-align:right;">{cus_s}</div>'
             f'<div style="font-size:12px;color:{T["textDim"]};">{name}</div>'
             f'<div style="color:{T["textMute"]};text-align:right;font-size:14px;">›</div>'
@@ -1196,14 +1242,7 @@ def render():
         st.session_state['profile_page'] = 0
 
     with st.spinner(''):
-        df           = load_profiles()
-        try:
-            all_sessions   = load_all_sessions()
-            all_page_views = load_all_page_views()
-        except Exception as e:
-            st.warning(f'Could not load session history: {e}')
-            all_sessions   = pd.DataFrame()
-            all_page_views = pd.DataFrame()
+        df = load_profiles()
 
     if df is None or df.empty:
         st.error('No profile data available.')
@@ -1223,7 +1262,7 @@ def render():
     if st.session_state.profile_email:
         mask = df['Email'] == st.session_state.profile_email
         if mask.any():
-            render_detail(df[mask].iloc[0], all_sessions, all_page_views)
+            render_detail(df[mask].iloc[0])
             return
         st.session_state.profile_email = None
 

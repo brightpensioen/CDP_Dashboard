@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 
 T = {
     'bg':         '#0e1216',
@@ -55,12 +54,9 @@ ACTIVITY_META = {
     'signup':               {'label': 'Signed up',            'color': '#fbbf24', 'bg': 'rgba(251,191,36,0.12)'},
     'customer':             {'label': 'Became customer',      'color': '#34d399', 'bg': 'rgba(52,211,153,0.14)'},
     'paying_started':       {'label': 'Started paying',       'color': '#34d399', 'bg': 'rgba(52,211,153,0.14)'},
-    'session':              {'label': 'Session',              'color': '#9aa3ad', 'bg': 'rgba(154,163,173,0.10)'},
+    'session_website':      {'label': 'Website',              'color': '#9aa3ad', 'bg': 'rgba(154,163,173,0.10)'},
+    'session_portal':       {'label': 'Portal',               'color': '#34d399', 'bg': 'rgba(52,211,153,0.10)'},
 }
-
-# Keep old names as aliases so other modules don't break
-CHANNEL_COLORS = {ch: m['dot'] for ch, m in CHANNEL_META.items()}
-STATUS_COLORS  = {s: m['color'] for s, m in STATUS_META.items()}
 
 
 def inject_global_css():
@@ -365,40 +361,3 @@ def detail_row_html(label: str, value, mono: bool = False) -> str:
     )
 
 
-# Keep legacy function names used by older page code
-def page_header(title: str, subtitle: str = ""):
-    st.markdown(
-        f'<div style="display:flex;align-items:baseline;gap:14px;'
-        f'border-bottom:1px solid {T["border"]};padding-bottom:16px;margin-bottom:24px;">'
-        f'<span style="font-size:20px;font-weight:600;color:{T["text"]};'
-        f'letter-spacing:-0.02em;">{title}</span>'
-        f'{"<span style=\"font-size:12px;color:" + T["textMute"] + ";font-family:Inter,monospace;\">" + subtitle + "</span>" if subtitle else ""}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def status_badge(status: str) -> str:
-    return status_badge_html(status)
-
-
-def kpi_row(metrics: list):
-    cols = st.columns(len(metrics))
-    for col, m in zip(cols, metrics):
-        with col:
-            st.metric(label=m["label"], value=m["value"], delta=m.get("delta"), delta_color=m.get("delta_color", "normal"))
-
-
-def section_label(text: str):
-    st.markdown(section_label_html(text), unsafe_allow_html=True)
-
-
-def channel_color(channel: str) -> str:
-    return CHANNEL_META.get(channel, CHANNEL_META['Direct'])['dot']
-
-
-def pct_delta(current: float, previous: float) -> str | None:
-    if previous == 0:
-        return None
-    delta = (current - previous) / previous * 100
-    return f"{'+'if delta>=0 else ''}{delta:.1f}%"
