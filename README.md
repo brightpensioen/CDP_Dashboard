@@ -64,6 +64,11 @@ gcloud projects add-iam-policy-binding prj-data-warehousing \
   --member serviceAccount:cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
   --role roles/bigquery.jobUser
 
+# Needed because to_dataframe() uses the BigQuery Storage Read API
+gcloud projects add-iam-policy-binding prj-data-warehousing \
+  --member serviceAccount:cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/bigquery.readSessionUser
+
 # Dataset-level read access (BigQuery console → ds_cdp → Sharing → add the SA
 # as BigQuery Data Viewer), or via bq:
 # bq add-iam-policy-binding --member=serviceAccount:cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
@@ -137,13 +142,10 @@ gcloud iam service-accounts create cdp-dashboard-build \
 
 gcloud projects add-iam-policy-binding prj-data-warehousing \
   --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/cloudbuild.builds.builder
+gcloud projects add-iam-policy-binding prj-data-warehousing \
+  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
   --role roles/run.admin
-gcloud projects add-iam-policy-binding prj-data-warehousing \
-  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
-  --role roles/artifactregistry.writer
-gcloud projects add-iam-policy-binding prj-data-warehousing \
-  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
-  --role roles/logging.logWriter
 
 gcloud iam service-accounts add-iam-policy-binding \
   cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
@@ -168,6 +170,7 @@ The service account running the app needs:
 
 - `roles/bigquery.dataViewer` on `prj-data-warehousing.ds_cdp`
 - `roles/bigquery.jobUser` on the project
+- `roles/bigquery.readSessionUser` on the project (Storage Read API, used by `to_dataframe()`)
 
 ## Caching
 
