@@ -1,0 +1,35 @@
+steps:
+  # Build the container image
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app:$COMMIT_SHA
+      - -t
+      - europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app:latest
+      - .
+
+  # Push both tags to Artifact Registry
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app
+
+  # Deploy the new image; all other service settings (service account,
+  # IAP, session affinity, timeout) carry over from the current revision
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - cdp-dashboard
+      - --image=europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app:$COMMIT_SHA
+      - --region=europe-west4
+
+images:
+  - europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app:$COMMIT_SHA
+  - europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

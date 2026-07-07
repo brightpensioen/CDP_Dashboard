@@ -1,0 +1,15 @@
+.git
+.gitignore
+.claude
+.devcontainer
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.streamlit/secrets.toml
+README.md
+DASHBOARD_DATA_CONTEXT.md
+design_handoff_cdp_profiles
+Dockerfile
+.dockerignore
+cloudbuild.yaml

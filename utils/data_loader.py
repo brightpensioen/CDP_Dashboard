@@ -1,34 +1,21 @@
 """
 BigQuery data loading utilities with Streamlit caching.
 
-Setup:
-    1. Set GCP credentials via st.secrets or GOOGLE_APPLICATION_CREDENTIALS env var.
-    2. Update PROJECT_ID and DATASET below.
+Auth uses Application Default Credentials only:
+  - Cloud Run: the service account attached to the service (no key files)
+  - Local dev: `gcloud auth application-default login`
 """
 
 import streamlit as st
 import pandas as pd
 from google.cloud import bigquery
-from google.oauth2 import service_account
 
 PROJECT_ID = "prj-data-warehousing"
 DATASET = "ds_cdp"
 
 
 def get_bq_client() -> bigquery.Client:
-    """
-    Returns a BigQuery client.
-    Priority:
-      1. st.secrets["gcp_service_account"]  (recommended for Streamlit Cloud)
-      2. Application Default Credentials      (local dev / GCE / Cloud Run)
-    """
-    if "gcp_service_account" in st.secrets:
-        credentials = service_account.Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        )
-        return bigquery.Client(credentials=credentials, project=PROJECT_ID)
-
+    """Returns a BigQuery client authenticated via Application Default Credentials."""
     return bigquery.Client(project=PROJECT_ID)
 
 

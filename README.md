@@ -31,14 +31,7 @@ pip install -r requirements.txt
 
 ### 2. Configure BigQuery credentials
 
-**Option A — Service account key (recommended for local dev):**
-
-```bash
-cp .streamlit/secrets.toml.template .streamlit/secrets.toml
-# Fill in your service account credentials in secrets.toml
-```
-
-**Option B — Application Default Credentials:**
+The app uses Application Default Credentials only — no service account key files.
 
 ```bash
 gcloud auth application-default login
@@ -57,30 +50,116 @@ The dashboard opens at [http://localhost:8501](http://localhost:8501).
 
 ### Google Cloud Run
 
+Authentication to BigQuery happens via the service account **attached** to the
+Cloud Run service (Application Default Credentials). No exported key files are
+used anywhere.
+
 ```bash
+# One-time: dedicated runtime service account
+gcloud iam service-accounts create cdp-dashboard-run \
+  --project prj-data-warehousing \
+  --display-name "CDP Dashboard (Cloud Run)"
+
+gcloud projects add-iam-policy-binding prj-data-warehousing \
+  --member serviceAccount:cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/bigquery.jobUser
+
+# Dataset-level read access (BigQuery console → ds_cdp → Sharing → add the SA
+# as BigQuery Data Viewer), or via bq:
+# bq add-iam-policy-binding --member=serviceAccount:cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
+#   --role=roles/bigquery.dataViewer prj-data-warehousing:ds_cdp
+
 # Build
-gcloud builds submit --tag gcr.io/prj-data-warehousing/cdp-dashboard
+gcloud builds submit --tag europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app
 
 # Deploy
 gcloud run deploy cdp-dashboard \
-  --image gcr.io/prj-data-warehousing/cdp-dashboard \
+  --image europe-west4-docker.pkg.dev/prj-data-warehousing/cdp-dashboard/app \
   --region europe-west4 \
   --no-allow-unauthenticated \
-  --service-account your-sa@prj-data-warehousing.iam.gserviceaccount.com
+  --service-account cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
+  --session-affinity \
+  --timeout 3600
 ```
 
-Use `--no-allow-unauthenticated` and restrict access to your internal users via IAM (`roles/run.invoker`).
+Notes:
 
-### Dockerfile
+- `--session-affinity` and a long `--timeout` keep Streamlit's websocket
+  sessions stable behind Cloud Run's load balancer.
+- `--no-allow-unauthenticated` blocks anonymous access. Since browsers can't
+  send Google identity tokens themselves, enable **Identity-Aware Proxy (IAP)**
+  on the service — users then log in with their @brightpensioen.nl account.
 
-```dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 8501
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+### Access control (IAP)
+
+```bash
+# One-time: create the IAP service agent and let it invoke the service
+gcloud beta services identity create --service=iap.googleapis.com \
+  --project=prj-data-warehousing
+
+gcloud run services add-iam-policy-binding cdp-dashboard \
+  --region europe-west4 \
+  --member='serviceAccount:service-PROJECT_NUMBER@gcp-sa-iap.iam.gserviceaccount.com' \
+  --role='roles/run.invoker'
+
+# Enable IAP on the service
+gcloud run services update cdp-dashboard --region europe-west4 --iap
+
+# Grant access — per user, per Google group, or the whole Workspace domain
+gcloud beta iap web add-iam-policy-binding \
+  --resource-type=cloud-run \
+  --service=cdp-dashboard \
+  --region=europe-west4 \
+  --member='group:cdp-dashboard-users@brightpensioen.nl' \
+  --role='roles/iap.httpsResourceAccessor'
+```
+
+Anyone visiting the URL gets a Google sign-in page; only principals with
+`roles/iap.httpsResourceAccessor` get through. Manage access by editing the
+Google group membership — no redeploys needed.
+
+### CI/CD (Cloud Build)
+
+Pushes to `main` build and deploy automatically via `cloudbuild.yaml`.
+One-time setup:
+
+```bash
+# Artifact Registry repo for the images
+gcloud artifacts repositories create cdp-dashboard \
+  --repository-format=docker \
+  --location=europe-west4 \
+  --project=prj-data-warehousing
+
+# Build service account (used by the trigger) needs to deploy and act as the runtime SA
+gcloud iam service-accounts create cdp-dashboard-build \
+  --project prj-data-warehousing \
+  --display-name "CDP Dashboard (Cloud Build)"
+
+gcloud projects add-iam-policy-binding prj-data-warehousing \
+  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/run.admin
+gcloud projects add-iam-policy-binding prj-data-warehousing \
+  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/artifactregistry.writer
+gcloud projects add-iam-policy-binding prj-data-warehousing \
+  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/logging.logWriter
+
+gcloud iam service-accounts add-iam-policy-binding \
+  cdp-dashboard-run@prj-data-warehousing.iam.gserviceaccount.com \
+  --member serviceAccount:cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com \
+  --role roles/iam.serviceAccountUser
+
+# Connect the GitHub repo and create the trigger (Console: Cloud Build →
+# Triggers → Connect repository), then:
+gcloud builds triggers create github \
+  --name=deploy-cdp-dashboard \
+  --repo-name=CDP_Dashboard \
+  --repo-owner=otis-bright \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.yaml \
+  --region=europe-west4 \
+  --service-account=projects/prj-data-warehousing/serviceAccounts/cdp-dashboard-build@prj-data-warehousing.iam.gserviceaccount.com
 ```
 
 ## IAM requirements
@@ -101,9 +180,9 @@ Adjust `ttl` in `utils/data_loader.py` to match your pipeline cadence.
 cdp_dashboard/
 ├── app.py                          # Entry point, sidebar navigation
 ├── requirements.txt
+├── Dockerfile                      # Cloud Run container
 ├── .streamlit/
-│   ├── config.toml                 # Dark theme + server config
-│   └── secrets.toml.template       # Copy → secrets.toml, fill in SA key
+│   └── config.toml                 # Dark theme + server config
 ├── pages/
 │   ├── overview.py                 # Health KPIs, growth chart, funnel
 │   ├── profiles.py                 # Profile table + detail cards
